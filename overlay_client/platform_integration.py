@@ -11,6 +11,13 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QGuiApplication, QWindow
 from PyQt6.QtWidgets import QWidget
 
+# local helper to mark STEAM_EXTERNAL_OVERLAY on X11 windows (optional)
+try:
+    from .x11_overlay_atom import set_steam_external_overlay_atom  # type: ignore
+except Exception:
+    set_steam_external_overlay_atom = None  # type: ignore
+
+
 MonitorSnapshot = Tuple[str, int, int, int, int]
 
 
@@ -84,8 +91,35 @@ class _WindowsIntegration(_IntegrationBase):
 class _XcbIntegration(_IntegrationBase):
     """X11 integration that relies on Qt's transparent input flag."""
 
-    # No extra logic; base implementation suffices.
-    pass
+    def prepare_window(self, window: Optional[QWindow]) -> None:
+        # store window for later use (base handles this)
+        super().prepare_window(window)
+
+        # Best-effort: if we have the xprop helper and a valid window ID, set the gamescope atom.
+        logger = getattr(self, "_logger", logging.getLogger(__name__))
+        if set_steam_external_overlay_atom is None:
+            logger.debug("STEAM_EXTERNAL_OVERLAY helper not available; skipping")
+            return
+
+        if window is None:
+            logger.debug("No window provided to X11 prepare_window; skipping STEAM_EXTERNAL_OVERLAY")
+            return
+
+        try:
+            wid = int(window.winId())
+            if wid:
+                try:
+                    ok = set_steam_external_overlay_atom(wid, logger=logger)
+                    if ok:
+                        logger.debug("STEAM_EXTERNAL_OVERLAY atom applied to winid=%s", wid)
+                    else:
+                        logger.debug("STEAM_EXTERNAL_OVERLAY atom not applied to winid=%s", wid)
+                except Exception as exc:
+                    logger.debug("Exception while setting STEAM_EXTERNAL_OVERLAY atom: %s", exc)
+            else:
+                logger.debug("window.winId() returned 0; window may not be mapped yet")
+        except Exception as exc:
+            logger.debug("Unable to determine window.winId for STEAM_EXTERNAL_OVERLAY: %s", exc)
 
 
 class _WaylandIntegration(_IntegrationBase):
