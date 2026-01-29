@@ -4,19 +4,14 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import shutil
+import subprocess
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QGuiApplication, QWindow
 from PyQt6.QtWidgets import QWidget
-
-# local helper to mark STEAM_EXTERNAL_OVERLAY on X11 windows (optional)
-try:
-    from .x11_overlay_atom import set_steam_external_overlay_atom  # type: ignore
-except Exception:
-    set_steam_external_overlay_atom = None  # type: ignore
-
 
 MonitorSnapshot = Tuple[str, int, int, int, int]
 
@@ -91,37 +86,47 @@ class _WindowsIntegration(_IntegrationBase):
 class _XcbIntegration(_IntegrationBase):
     """X11 integration that relies on Qt's transparent input flag."""
 
+    # No extra logic; base implementation suffices.
+    pass
+
+class _GamescopeIntegration(_IntegrationBase):
+    """X11 integration that sets the Gamescope overlay X atom."""
+
     def prepare_window(self, window: Optional[QWindow]) -> None:
-        # store window for later use (base handles this)
         super().prepare_window(window)
-
-        # Best-effort: if we have the xprop helper and a valid window ID, set the gamescope atom.
-        logger = getattr(self, "_logger", logging.getLogger(__name__))
-        if set_steam_external_overlay_atom is None:
-            logger.debug("STEAM_EXTERNAL_OVERLAY helper not available; skipping")
-            return
-
         if window is None:
-            logger.debug("No window provided to X11 prepare_window; skipping STEAM_EXTERNAL_OVERLAY")
+            return
+        self._logger.debug("Setting Gamescope overlay X atom on window")
+        if shutil.which("xprop") is not None:
+            self._logger.debug("xprop not found in PATH; cannot set Gamescope overlay atom.")
             return
 
         try:
-            wid = int(window.winId())
-            if wid:
-                try:
-                    ok = set_steam_external_overlay_atom(wid, logger=logger)
-                    if ok:
-                        logger.debug("STEAM_EXTERNAL_OVERLAY atom applied to winid=%s", wid)
-                    else:
-                        logger.debug("STEAM_EXTERNAL_OVERLAY atom not applied to winid=%s", wid)
-                except Exception as exc:
-                    logger.debug("Exception while setting STEAM_EXTERNAL_OVERLAY atom: %s", exc)
-            else:
-                logger.debug("window.winId() returned 0; window may not be mapped yet")
+            xid = int(window.winId())
         except Exception as exc:
-            logger.debug("Unable to determine window.winId for STEAM_EXTERNAL_OVERLAY: %s", exc)
-
-
+            self._logger.debug("Unable to determine window XID: %s", exc)
+            return
+        # Define atom type/format as CARDINAL (32-bit). Use 32c like Discover does conventionally.
+        cmd = [
+            "xprop",
+            "-id",
+            str(xid),
+            "-f",
+            "GAMESCOPE_EXTERNAL_OVERLAY",
+            "32c",
+            "-set",
+            "GAMESCOPE_EXTERNAL_OVERLAY",
+            "1",
+        ]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            self._logger.info("Set GAMESCOPE_EXTERNAL_OVERLAY=%s on xid %s", val, xid)
+        except subprocess.CalledProcessError as exc:
+            # capture stderr and log it
+            stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+            self._logger.warning("xprop failed setting Gamescope atom on xid %s: %s", xid, stderr.strip())
+        except Exception as exc:
+            self._logger.exception("Unexpected error setting Gamescope atom: %s", exc)
 class _WaylandIntegration(_IntegrationBase):
     """Wayland integration that attempts compositor-specific behaviour."""
 
@@ -286,6 +291,9 @@ class PlatformController:
         if sys.platform.startswith("win"):
             self._logger.debug("Selecting Windows integration for overlay client")
             return _WindowsIntegration(self._widget, self._logger, self._context)
+        if (os.environ.get("XDG_SESSION_DESKTOP") or "").lower() == "gamescope":
+            self._logger.debug("Gamescope session detected; using Gamescope integration")
+            return _GamescopeIntegration(self._widget, self._logger, self._context)
         if self._context.force_xwayland or self._platform_name.startswith("xcb"):
             self._logger.debug("Selecting XCB/X11 integration for overlay client")
             return _XcbIntegration(self._widget, self._logger, self._context)
