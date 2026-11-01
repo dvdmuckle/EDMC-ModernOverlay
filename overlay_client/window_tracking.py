@@ -179,12 +179,9 @@ def create_elite_window_tracker(
             return None
     if platform.startswith("linux"):
         session = (os.environ.get("EDMC_OVERLAY_SESSION_TYPE") or os.environ.get("XDG_SESSION_TYPE") or "").lower()
-        compositor = (os.environ.get("EDMC_OVERLAY_COMPOSITOR") or "").lower()
+        compositor = _resolve_wayland_compositor(os.environ.get("EDMC_OVERLAY_COMPOSITOR") or "")
         force_xwayland = os.environ.get("EDMC_OVERLAY_FORCE_XWAYLAND") == "1"
-        desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or "").upper()
-        is_gnome = compositor in {"gnome-shell", "mutter"} or (
-            not compositor and ("GNOME" in desktop or bool(os.environ.get("GNOME_SHELL_SESSION_MODE")))
-        )
+        is_gnome = compositor in {"gnome-shell", "mutter"}
         if session == "wayland" and (not force_xwayland or is_gnome):
             tracker = _create_wayland_tracker(logger, title_hint, monitor_provider, compositor)
             if tracker is not None:
@@ -203,6 +200,21 @@ def create_elite_window_tracker(
     return None
 
 
+def _resolve_wayland_compositor(compositor_hint: str) -> str:
+    compositor = (compositor_hint or "").lower()
+    if compositor:
+        return compositor
+    if os.environ.get("SWAYSOCK"):
+        return "sway"
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return "hyprland"
+    if "KDE" in (os.environ.get("XDG_CURRENT_DESKTOP") or "").upper() or os.environ.get("KDE_FULL_SESSION"):
+        return "kwin"
+    if "GNOME" in (os.environ.get("XDG_CURRENT_DESKTOP") or "").upper() or os.environ.get("GNOME_SHELL_SESSION_MODE"):
+        return "gnome-shell"
+    return ""
+
+
 def _create_wayland_tracker(
     logger: logging.Logger,
     title_hint: str,
@@ -210,16 +222,6 @@ def _create_wayland_tracker(
     compositor_hint: str,
 ) -> Optional[WindowTracker]:
     compositor = (compositor_hint or "").lower()
-    env = os.environ
-    if not compositor:
-        if env.get("SWAYSOCK"):
-            compositor = "sway"
-        elif env.get("HYPRLAND_INSTANCE_SIGNATURE"):
-            compositor = "hyprland"
-        elif "KDE" in (env.get("XDG_CURRENT_DESKTOP") or "").upper() or env.get("KDE_FULL_SESSION"):
-            compositor = "kwin"
-        elif "GNOME" in (env.get("XDG_CURRENT_DESKTOP") or "").upper() or env.get("GNOME_SHELL_SESSION_MODE"):
-            compositor = "gnome-shell"
     if compositor in {"sway", "wlroots", "wayfire"}:
         return _SwayTracker(logger, title_hint, monitor_provider)
     if compositor == "hyprland":
